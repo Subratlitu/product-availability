@@ -5,6 +5,7 @@ import { Product, ProductDocument } from './schemas/product.schema';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { VendorService } from 'src/vendors/vendor.service';
+import { CacheService } from 'src/cache/cache.service';
 
 @Injectable()
 export class ProductService {
@@ -12,7 +13,8 @@ export class ProductService {
     @InjectModel(Product.name)
     private productModel: Model<ProductDocument>,
 
-    private vendorService: VendorService, // Inject VendorService
+    private vendorService: VendorService,
+    private cacheService: CacheService,
   ) {}
 
   async aggregate(pipeline: any[]) {
@@ -20,10 +22,15 @@ export class ProductService {
   }
 
   async getProductDetails(sku: string) {
-    // 1. Fetch base product details from MongoDB
+    // 1. Check Cache
+    const cached = await this.cacheService.getProductCache(sku);
+    if (cached) {
+      return { ...cached, cache: 'HIT' };
+    }
+
+    // 2. Fetch base product
     const product = await this.productModel.aggregate([
       { $match: { sku } },
-
       {
         $project: {
           _id: 0,
@@ -42,40 +49,36 @@ export class ProductService {
 
     const productData = product[0];
 
-    // 2. Fetch vendor data (3 vendor calls)
+    // 3. Fetch vendor offers
     const vendorOffers = await this.vendorService.getAllVendors(sku);
 
-    // If no vendor returned valid data
     if (!vendorOffers.length) {
-      return {
+      const out = {
         ...productData,
         vendor_offers: [],
         best_offer: 'OUT_OF_STOCK',
       };
+
+      await this.cacheService.setProductCache(sku, out);
+      return out;
     }
 
-    //  3. Filter out invalid vendors with null price
-    const validVendors = vendorOffers.filter((v) => v.price !== null);
+    // FIX: price can be null → treat null as Infinity (highest price)
+    const bestOffer = vendorOffers.reduce((best, current) => {
+      const bestPrice = best.price ?? Infinity;
+      const currPrice = current.price ?? Infinity;
+      return currPrice < bestPrice ? current : best;
+    });
 
-    if (!validVendors.length) {
-      return {
-        ...productData,
-        vendor_offers: vendorOffers,
-        best_offer: 'OUT_OF_STOCK',
-      };
-    }
-
-    // 🔥 4. Best vendor selection (safe comparison)
-    const bestOffer = validVendors.reduce((best, current) =>
-      (current.price as number) < (best.price as number) ? current : best
-    );
-
-    // 5. Final combined response
-    return {
+    const finalResponse = {
       ...productData,
       vendor_offers: vendorOffers,
       best_offer: bestOffer,
     };
+
+    await this.cacheService.setProductCache(sku, finalResponse);
+
+    return finalResponse;
   }
 
   async create(createProductDto: CreateProductDto): Promise<Product> {
@@ -91,16 +94,27 @@ export class ProductService {
     return this.productModel.findById(id).exec();
   }
 
-  async update(
-    id: string,
-    updateProductDto: UpdateProductDto,
-  ): Promise<Product | null> {
-    return this.productModel.findByIdAndUpdate(id, updateProductDto, {
-      new: true,
-    }).exec();
+  async update(id: string, updateProductDto: UpdateProductDto) {
+    const updated = await this.productModel
+      .findByIdAndUpdate(id, updateProductDto, { new: true })
+      .exec();
+
+    if (updated) {
+      const sku = (updated as ProductDocument).sku;
+      if (sku) await this.cacheService.deleteProductCache(sku);
+    }
+
+    return updated;
   }
 
-  async remove(id: string): Promise<Product | null> {
-    return this.productModel.findByIdAndDelete(id).exec();
+  async remove(id: string) {
+    const deleted = await this.productModel.findByIdAndDelete(id).exec();
+
+    if (deleted) {
+      const sku = (deleted as ProductDocument).sku;
+      if (sku) await this.cacheService.deleteProductCache(sku);
+    }
+
+    return deleted;
   }
 }
