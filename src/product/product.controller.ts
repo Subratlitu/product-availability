@@ -27,7 +27,11 @@ export class ProductController {
   create(@Body() createProductDto: CreateProductDto) {
     return this.productService.create(createProductDto);
   }
-
+   @Get(':sku')
+  async getBySku(@Param('sku') sku: string) {
+    return this.productService.getProductDetails(sku);
+  }
+  
   @Get()
   findAll() {
     return this.productService.findAll();
