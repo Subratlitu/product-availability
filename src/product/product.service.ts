@@ -12,6 +12,10 @@ export class ProductService {
         private productModel: Model<ProductDocument>,
     ) { }
 
+    async aggregate(pipeline: any[]) {
+        return this.productModel.aggregate(pipeline).exec();
+    }
+
     async create(createProductDto: CreateProductDto): Promise<Product> {
         const product = new this.productModel(createProductDto);
         return product.save();
