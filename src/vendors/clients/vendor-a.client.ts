@@ -1,23 +1,36 @@
-// src/vendors/clients/vendor-a.client.ts
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { VendorHttpFactory } from '../vendor-http.factory';
+import { Injectable, Logger } from '@nestjs/common';
+import { axiosWithRetry } from '../../common/helpers/retry.helper';
+
+interface VendorAApiResponse {
+  price: number;
+  availability: string;
+  stock: number;
+}
 
 @Injectable()
 export class VendorAClient {
-  private axios;
+  private readonly logger = new Logger(VendorAClient.name);
 
-  constructor(
-    private config: ConfigService,
-    private httpFactory: VendorHttpFactory,
-  ) {
-    this.axios = this.httpFactory.getInstance();
-  }
+  async fetch(sku: string) {
+    const url = `http://localhost:3000/mock/vendor-a/${sku}`;
 
-  async fetch(sku: string): Promise<any> {
-    const base = this.config.get<string>('VENDOR_A_URL');
-    const url = `${base}/${sku}`;
-    const resp = await this.axios.get(url);
-    return resp.data;
+    try {
+      const data = await axiosWithRetry<VendorAApiResponse>(url, {
+        retries: 2,
+        timeoutMs: 2000,
+        retryDelayMs: 200,
+      });
+
+      return {
+        price: data.price ?? null,
+        vendor: 'VendorA',
+        availability: data.availability ?? 'UNKNOWN',
+        stock: data.stock ?? 0,
+        timestamp: Date.now(),
+      };
+    } catch (err) {
+      this.logger.error(`Vendor A failed for ${sku}: ${err?.message}`);
+      throw err;
+    }
   }
 }

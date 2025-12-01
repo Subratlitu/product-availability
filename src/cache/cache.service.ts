@@ -79,6 +79,11 @@ export class CacheService {
     this.memoryStore.delete(key);
   }
 
+  // Alias for backward compatibility
+  async deleteVendorCache(sku: string): Promise<void> {
+    return this.deleteProductCache(sku);
+  }
+
   // For testing / debug: list memory keys (not for production)
   getMemoryKeys(): string[] {
     return Array.from(this.memoryStore.keys());

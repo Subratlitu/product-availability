@@ -6,6 +6,7 @@ import { ProductController } from './product.controller';
 import { Product, ProductSchema } from './schemas/product.schema';
 import { VendorModule } from 'src/vendors/vendor.module';
 import { CacheModule } from 'src/cache/cache.module';
+import { PriceRefreshWorker } from 'src/queues/workers/price-refresh.worker';
 
 @Module({
   imports: [
@@ -14,6 +15,8 @@ import { CacheModule } from 'src/cache/cache.module';
     CacheModule,
   ],
   controllers: [ProductController],
-  providers: [ProductService],
+  providers: [ProductService , PriceRefreshWorker],
+  exports: [ProductService]
 })
 export class ProductModule {}
+

@@ -14,7 +14,7 @@ export class VendorHttpFactory {
 
         this.axiosInstance = axios.create({
             timeout, // milliseconds
-            // You can add other defaults here (headers, keepAlive, etc.)
+            
         });
 
         // Configure axios-retry:

@@ -26,18 +26,18 @@ import Redis, { Redis as RedisClient } from 'ioredis';
 
           client.on('connect', () => {
             // eslint-disable-next-line no-console
-            console.log('✅ Redis connected');
+            console.log(' Redis connected');
           });
 
           client.on('error', (err) => {
             // eslint-disable-next-line no-console
-            console.log('❌ Redis error:', err && err.message ? err.message : err);
+            console.log(' Redis error:', err && err.message ? err.message : err);
           });
 
           return client;
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.log('❌ Redis client creation failed, continuing without Redis', err);
+          console.log(' Redis client creation failed, continuing without Redis', err);
           return null;
         }
       },

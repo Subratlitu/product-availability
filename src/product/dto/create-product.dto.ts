@@ -2,6 +2,9 @@ import { IsString, IsOptional, IsNumber } from 'class-validator';
 
 export class CreateProductDto {
   @IsString()
+  sku: string;
+  
+  @IsString()
   productId: string;
 
   @IsString()

@@ -1,44 +1,60 @@
 // src/vendors/clients/vendor-c.client.ts
-import { Injectable, HttpException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { VendorHttpFactory } from '../vendor-http.factory';
-import { CircuitBreaker } from '../circuit-breaker.util';
+import { Injectable, Logger, HttpException } from '@nestjs/common';
+import { axiosWithRetry } from '../../common/helpers/retry.helper';
+import { CircuitBreakerService } from '../circuit-breaker.service';
+
+interface VendorCApiResponse {
+  cost: number;
+  available: boolean;
+  quantity: number;
+}
 
 @Injectable()
 export class VendorCClient {
-  private axios;
+  private readonly logger = new Logger(VendorCClient.name);
+  private readonly breakerKey = 'vendorC'; // identifier for this vendor in the breaker
 
-  constructor(
-    private config: ConfigService,
-    private httpFactory: VendorHttpFactory,
-    private circuit: CircuitBreaker,
-  ) {
-    this.axios = this.httpFactory.getInstance();
-  }
+  constructor(private readonly circuit: CircuitBreakerService) {}
 
-  async fetch(sku: string): Promise<any> {
-    // ---- CIRCUIT BREAKER ----
-    if (!this.circuit.canRequest()) {
-      throw new HttpException(
-        'VendorC circuit breaker: temporarily unavailable',
-        503,
-      );
+  /**
+   * Fetch vendor-C data with retries (axiosWithRetry) and circuit-breaker protection.
+   * If the circuit is OPEN -> we throw a special HttpException to be logged and skipped upstream.
+   */
+  async fetch(sku: string) {
+    // Check circuit state first
+    if (!this.circuit.canRequest(this.breakerKey)) {
+      // Circuit is open — skip calling vendor C
+      this.logger.warn(`VendorC skipped by circuit breaker for SKU=${sku}`);
+      // Throwing allows upstream Promise.allSettled to mark it as rejected; we could also return a sentinel value
+      throw new HttpException('VendorC circuit open - skipped', 503);
     }
 
-    const base = this.config.get<string>('VENDOR_C_URL');
-    const url = `${base}/${sku}`;
+    const url = `${process.env.VENDOR_C_URL ?? 'http://localhost:3000/mock/vendor-c'}/${sku}`;
 
     try {
-      const resp = await this.axios.get(url);
+      const data = await axiosWithRetry<VendorCApiResponse>(url, {
+        retries: Number(process.env.VENDOR_RETRIES ?? 2),
+        timeoutMs: Number(process.env.VENDOR_REQUEST_TIMEOUT_MS ?? 2000),
+        retryDelayMs: 200,
+      });
 
-      // SUCCESS → reset breaker
-      this.circuit.onSuccess();
+      // On success -> inform circuit breaker
+      this.circuit.onSuccess(this.breakerKey);
 
-      return resp.data;
+      return {
+        price: data.cost ?? null,
+        vendor: 'VendorC',
+        availability: data.available ? 'IN_STOCK' : 'OUT_OF_STOCK',
+        stock: data.quantity ?? 0,
+        timestamp: new Date(),
+      };
     } catch (err) {
-      // FAILURE → update breaker
-      this.circuit.onFailure();
+      // Final failure (after retries) -> inform circuit breaker
+      this.circuit.onFailure(this.breakerKey);
 
+      this.logger.error(`Vendor C failed for ${sku}: ${err?.message ?? err}`);
+
+      // Bubble the error upstream so ProductService/vendor.service can ignore it gracefully
       throw err;
     }
   }

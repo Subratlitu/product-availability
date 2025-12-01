@@ -1,10 +1,11 @@
 export class VendorBAdapter {
   static normalize(raw: any) {
     return {
-      vendor: "B",
+      vendor: "VendorB",
       price: Number(raw.amount) || null,
-      stock: raw.in_stock ? 5 : 0,
-      timestamp: new Date(raw.updated_at),
+      stock: Number(raw.stock) ?? (raw.inStock ? 5 : 0),
+      availability: raw.inStock ? "IN_STOCK" : "OUT_OF_STOCK",
+      timestamp: new Date(), // mock has no timestamp
     };
   }
 }

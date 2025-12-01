@@ -3,4 +3,5 @@ export interface NormalizedVendorResponse {
   price: number | null;
   stock: number;
   timestamp: Date;
+  availability?: string | null;
 }

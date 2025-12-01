@@ -1,4 +1,3 @@
-// src/vendors/vendor.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { VendorAClient } from './clients/vendor-a.client';
 import { VendorBClient } from './clients/vendor-b.client';
@@ -7,6 +6,9 @@ import { VendorAAdapter } from './adapters/vendor-a.adapter';
 import { VendorBAdapter } from './adapters/vendor-b.adapter';
 import { VendorCAdapter } from './adapters/vendor-c.adapter';
 import { NormalizedVendorResponse } from './types/normalized-vendor-response';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { VendorLog, VendorLogDocument } from './schemas/vendor-log.schema';
 
 @Injectable()
 export class VendorService {
@@ -16,75 +18,119 @@ export class VendorService {
     private readonly vendorA: VendorAClient,
     private readonly vendorB: VendorBClient,
     private readonly vendorC: VendorCClient,
+
+    @InjectModel(VendorLog.name)
+    private vendorLogModel: Model<VendorLogDocument>,
   ) {}
 
-  /**
-   * Call all vendors in parallel, normalize responses, and apply freshness rule.
-   * Returns NormalizedVendorResponse[]
-   */
-  async getAllVendors(sku: string): Promise<NormalizedVendorResponse[]> {
-    const results = await Promise.allSettled([
-      this.vendorA.fetch(sku),
-      this.vendorB.fetch(sku),
-      this.vendorC.fetch(sku),
-    ]);
+  private vendorMap = [
+    { name: 'VendorA', client: 'vendorA', adapter: VendorAAdapter },
+    { name: 'VendorB', client: 'vendorB', adapter: VendorBAdapter },
+    { name: 'VendorC', client: 'vendorC', adapter: VendorCAdapter },
+  ];
 
-    const now = Date.now();
-    const TEN_MINUTES_MS = 10 * 60 * 1000;
-
-    const normalized: NormalizedVendorResponse[] = [];
-
-    // Vendor A result
-    if (results[0].status === 'fulfilled') {
-      try {
-        const raw = results[0].value;
-        const norm = VendorAAdapter.normalize(raw);
-        if (norm && (now - norm.timestamp.getTime()) <= TEN_MINUTES_MS) {
-          normalized.push(norm);
-        } else {
-          this.logger.warn(`VendorA returned stale or invalid data for ${sku}`);
-        }
-      } catch (err) {
-        this.logger.error(`VendorA normalization error for ${sku}: ${err?.message ?? err}`);
-      }
-    } else {
-      this.logger.warn(`VendorA fetch failed for ${sku}: ${String((results[0] as PromiseRejectedResult).reason)}`);
-    }
-
-    // Vendor B result
-    if (results[1].status === 'fulfilled') {
-      try {
-        const raw = results[1].value;
-        const norm = VendorBAdapter.normalize(raw);
-        if (norm && (now - norm.timestamp.getTime()) <= TEN_MINUTES_MS) {
-          normalized.push(norm);
-        } else {
-          this.logger.warn(`VendorB returned stale or invalid data for ${sku}`);
-        }
-      } catch (err) {
-        this.logger.error(`VendorB normalization error for ${sku}: ${err?.message ?? err}`);
-      }
-    } else {
-      this.logger.warn(`VendorB fetch failed for ${sku}: ${String((results[1] as PromiseRejectedResult).reason)}`);
-    }
-
-    // Vendor C result
-    if (results[2].status === 'fulfilled') {
-      try {
-        const raw = results[2].value;
-        const norm = VendorCAdapter.normalize(raw);
-        if (norm && (now - norm.timestamp.getTime()) <= TEN_MINUTES_MS) {
-          normalized.push(norm);
-        } else {
-          this.logger.warn(`VendorC returned stale or invalid data for ${sku}`);
-        }
-      } catch (err) {
-        this.logger.error(`VendorC normalization error for ${sku}: ${err?.message ?? err}`);
-      }
-    } else {
-      this.logger.warn(`VendorC fetch failed for ${sku}: ${String((results[2] as PromiseRejectedResult).reason)}`);
-    }
-
-    return normalized;
+  /* ============================================================
+      Vendor LOGGING Wrapper
+  ============================================================ */
+  private async logVendor({
+    sku,
+    vendor,
+    success,
+    responseTime,
+    price,
+    availability,
+    errorMessage,
+  }) {
+    await this.vendorLogModel.create({
+      sku,
+      vendor,
+      success,
+      responseTime,
+      price,
+      availability,
+      errorMessage,
+    });
   }
+
+  /* ============================================================
+        FETCH ALL VENDORS + LOGGING + NORMALIZATION
+  ============================================================ */
+  async getAllVendors(sku: string): Promise<NormalizedVendorResponse[]> {
+    const requests = this.vendorMap.map(vendorInfo => {
+      const start = Date.now();
+      const client = (this as any)[vendorInfo.client];
+
+      return client
+        .fetch(sku)
+        .then(res => ({
+          status: 'fulfilled',
+          vendorInfo,
+          response: res,
+          duration: Date.now() - start,
+        }))
+        .catch(err => ({
+          status: 'rejected',
+          vendorInfo,
+          error: err,
+          duration: Date.now() - start,
+        }));
+    });
+
+    const results = await Promise.all(requests);
+
+    const TTL = 10 * 60 * 1000;
+    const now = Date.now();
+    const final: NormalizedVendorResponse[] = [];
+
+    for (const r of results) {
+      const vendor = r.vendorInfo;
+
+      if (r.status === 'fulfilled') {
+        try {
+          const raw = r.response;
+          const norm = vendor.adapter.normalize(raw);
+
+          // Save success log
+          await this.logVendor({
+            sku,
+            vendor: vendor.name,
+            success: true,
+            responseTime: r.duration,
+            price: norm?.price ?? null,
+            availability: norm?.availability ?? 'unknown',
+            errorMessage: null,
+          });
+
+          // TTL validation
+          if (norm && now - norm.timestamp.getTime() <= TTL) {
+            final.push(norm);
+          } else {
+            this.logger.warn(
+              `${vendor.name} returned stale/invalid data for ${sku}`,
+            );
+          }
+        } catch (err) {
+          this.logger.error(
+            `${vendor.name} normalization error: ${err?.message ?? err}`,
+          );
+        }
+      } else {
+        // Save failed log
+        await this.logVendor({
+          sku,
+          vendor: vendor.name,
+          success: false,
+          responseTime: r.duration,
+          price: null,
+          availability: null,
+          errorMessage: r.error?.message || 'Vendor fetch failed',
+        });
+
+        this.logger.warn(`${vendor.name} fetch failed: ${String(r.error)}`);
+      }
+    }
+
+    return final;
+  }
+  
 }
